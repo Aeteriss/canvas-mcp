@@ -64,14 +64,20 @@ def main() -> None:
     log_info(f"Starting Canvas MCP server on port {port} using SSE...")
     
     try:
-        # We use transport="sse" and port=port. 
-        # We do NOT include host="0.0.0.0" here to avoid the TypeError.
-        mcp.run(transport="sse", port=port)
+        # This converts the MCP server into a standard web application
+        starlette_app = mcp.sse_app()
+        
+        import uvicorn
+        port = int(os.getenv("PORT", 8080))
+        
+        log_info(f"🚀 Manual Uvicorn startup on port {port}")
+        
+        # This is the industry standard way to run a web server on Railway
+        uvicorn.run(starlette_app, host="0.0.0.0", port=port)
+        
     except Exception as e:
-        log_error("Server error", exc=e)
+        log_error("Server error during Uvicorn startup", exc=e)
         sys.exit(1)
-    finally:
-        log_info("Server process finished.")
 
 if __name__ == "__main__":
     main()
