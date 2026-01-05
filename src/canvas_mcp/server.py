@@ -64,19 +64,27 @@ def main() -> None:
     log_info(f"Starting Canvas MCP server on port {port} using SSE...")
     
     try:
-        # This converts the MCP server into a standard web application
+        import uvicorn
+        from mcp.server.sse import SseServerTransport
+        
+        # This converts the MCP tools into a web app
         starlette_app = mcp.sse_app()
         
-        import uvicorn
         port = int(os.getenv("PORT", 8080))
-        
-        log_info(f"🚀 Manual Uvicorn startup on port {port}")
-        
-        # This is the industry standard way to run a web server on Railway
-        uvicorn.run(starlette_app, host="0.0.0.0", port=port)
+        log_info(f"🚀 Starting Uvicorn on port {port}")
+
+        # THE FIX: We tell the server NOT to validate the host header. 
+        # This is required for Railway's proxy to work with Poke.
+        uvicorn.run(
+            starlette_app, 
+            host="0.0.0.0", 
+            port=port,
+            proxy_headers=True,
+            forwarded_allow_ips="*"
+        )
         
     except Exception as e:
-        log_error("Server error during Uvicorn startup", exc=e)
+        log_error("Server error", exc=e)
         sys.exit(1)
 
 if __name__ == "__main__":
