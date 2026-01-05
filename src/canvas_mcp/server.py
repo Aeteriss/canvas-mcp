@@ -64,19 +64,18 @@ from starlette.responses import Response
 
 class PokeCompatibilityMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
-        # 1. Capture and modify headers
-        headers = dict(request.scope["headers"])
-        
-        # 2. Fix the "POST /sse" 405 error
-        # Poke talks to /sse, but the server listens on /messages
+        # 1. Fix the "POST /sse" 405 error
         if request.method == "POST" and request.url.path == "/sse":
             request.scope["path"] = "/messages"
 
-        # 3. Fix the "Request validation failed" error
-        # We set the host and origin to 0.0.0.0 so the security check passes
-        headers[b"host"] = b"0.0.0.0"
-        headers[b"origin"] = b"http://0.0.0.0"
-        request.scope["headers"] = [(k, v) for k, v in headers.items()]
+        # 2. DELETE the headers that cause "Request validation failed"
+        # We filter out Host, Origin, and Referer so the security check can't run
+        new_headers = []
+        for key, value in request.scope["headers"]:
+            if key.lower() not in [b"host", b"origin", b"referer"]:
+                new_headers.append((key, value))
+        
+        request.scope["headers"] = new_headers
             
         return await call_next(request)
 
