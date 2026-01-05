@@ -64,21 +64,34 @@ def main() -> None:
     log_info(f"Starting Canvas MCP server on port {port} using SSE...")
     
     try:
+        from starlette.middleware.base import BaseHTTPMiddleware
         import uvicorn
-        from mcp.server.sse import SseServerTransport
-        
-        # This converts the MCP tools into a web app
-        starlette_app = mcp.sse_app()
-        
-        port = int(os.getenv("PORT", 8080))
-        log_info(f"🚀 Starting Uvicorn on port {port}")
 
-        # THE FIX: We tell the server NOT to validate the host header. 
-        # This is required for Railway's proxy to work with Poke.
+        # 1. Create the base app
+        starlette_app = mcp.sse_app()
+
+        # 2. Add a "Host Fixer" Middleware
+        # This tells the server: "Ignore the Host header Railway sends and just work."
+        class HostFixerMiddleware(BaseHTTPMiddleware):
+            async def dispatch(self, request, call_next):
+                # We wipe out the host validation by forcing it to a neutral state
+                request.scope["headers"] = [
+                    (k, v) for k, v in request.scope["headers"] 
+                    if k.lower() != b"host"
+                ]
+                request.scope["headers"].append((b"host", b"0.0.0.0"))
+                return await call_next(request)
+
+        starlette_app.add_middleware(HostFixerMiddleware)
+
+        port = int(os.getenv("PORT", 8080))
+        log_info(f"🚀 Final Launch on port {port}")
+
+        # 3. Run with full proxy trust
         uvicorn.run(
             starlette_app, 
             host="0.0.0.0", 
-            port=port,
+            port=port, 
             proxy_headers=True,
             forwarded_allow_ips="*"
         )
