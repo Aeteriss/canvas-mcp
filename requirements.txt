@@ -3,4 +3,3 @@ mcp[sse]
 fastmcp
 python-dotenv
 uvicorn
-starlette
