@@ -164,4 +164,17 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import os
+    
+    # 1. Manually create the server instance
+    mcp = create_server()
+    
+    # 2. Register the tools (this makes them visible to Poke)
+    register_all_tools(mcp)
+    
+    # 3. Get the port Railway provides
+    port = int(os.getenv("PORT", 8080))
+    
+    # 4. Force it to run as a persistent SSE web server
+    print(f"🚀 Starting SSE server on port {port}...")
+    mcp.run(transport="sse", host="0.0.0.0", port=port)
