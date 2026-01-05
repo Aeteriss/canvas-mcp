@@ -58,24 +58,69 @@ class PokeCompatibilityMiddleware(BaseHTTPMiddleware):
             
         return await call_next(request)
 
+# --- THE POKE & RAILWAY FIX ---
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
+
+class PokeCompatibilityMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        # 1. Capture and modify headers
+        headers = dict(request.scope["headers"])
+        
+        # 2. Fix the "POST /sse" 405 error
+        # Poke talks to /sse, but the server listens on /messages
+        if request.method == "POST" and request.url.path == "/sse":
+            request.scope["path"] = "/messages"
+
+        # 3. Fix the "Request validation failed" error
+        # We set the host and origin to 0.0.0.0 so the security check passes
+        headers[b"host"] = b"0.0.0.0"
+        headers[b"origin"] = b"http://0.0.0.0"
+        request.scope["headers"] = [(k, v) for k, v in headers.items()]
+            
+        return await call_next(request)
+
+# --- THE POKE & RAILWAY FIX ---
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
+
+class PokeCompatibilityMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        # 1. Capture and modify headers
+        headers = dict(request.scope["headers"])
+        
+        # 2. Fix the "POST /sse" 405 error
+        # Poke talks to /sse, but the server listens on /messages
+        if request.method == "POST" and request.url.path == "/sse":
+            request.scope["path"] = "/messages"
+
+        # 3. Fix the "Request validation failed" error
+        # We set the host and origin to 0.0.0.0 so the security check passes
+        headers[b"host"] = b"0.0.0.0"
+        headers[b"origin"] = b"http://0.0.0.0"
+        request.scope["headers"] = [(k, v) for k, v in headers.items()]
+            
+        return await call_next(request)
+
 def main() -> None:
+    """Main entry point configured for Railway SSE deployment."""
     if not validate_config():
+        print("\nPlease check your Railway Variables.", file=sys.stderr)
         sys.exit(1)
 
     mcp = create_server()
     register_all_tools(mcp)
 
-    # Get the Starlette app from FastMCP
-    app = mcp.sse_app()
-    
-    # Apply our "Poke Fix"
-    app.add_middleware(PokeCompatibilityMiddleware)
+    # Convert FastMCP to a web app and add our Poke-fix middleware
+    starlette_app = mcp.sse_app()
+    starlette_app.add_middleware(PokeCompatibilityMiddleware)
 
+    import uvicorn
     port = int(os.getenv("PORT", 8080))
     log_info(f"🚀 Canvas MCP Live! Port: {port}")
 
     uvicorn.run(
-        app, 
+        starlette_app, 
         host="0.0.0.0", 
         port=port, 
         proxy_headers=True,
