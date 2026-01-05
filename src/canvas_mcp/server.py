@@ -64,14 +64,15 @@ def main() -> None:
     log_info(f"Starting Canvas MCP server on port {port} using SSE...")
     
     try:
-        # This is the critical line: it forces the server to stay awake
-        # and answer web requests instead of looking for a keyboard.
-        mcp.run(transport="sse", host="0.0.0.0", port=port)
+        # The library uses 'port' but handles the host binding internally 
+        # when transport is set to "sse".
+        port = int(os.getenv("PORT", 8080))
+        log_info(f"🚀 SSE Server starting on port {port}")
+        
+        # We removed host="0.0.0.0" to fix the TypeError
+        mcp.run(transport="sse", port=port)
+        
     except Exception as e:
-        log_error("Server error", exc=e)
-        sys.exit(1)
-    finally:
-        log_info("Server process finished.")
 
 if __name__ == "__main__":
     main()
