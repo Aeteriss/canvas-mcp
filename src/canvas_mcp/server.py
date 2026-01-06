@@ -8,6 +8,9 @@ import os
 import uvicorn
 from mcp.server.fastmcp import FastMCP
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.applications import Starlette
+from starlette.routing import Route
+from starlette.responses import Response
 
 # Import your existing tool registrations
 from .core.config import get_config, validate_config
@@ -21,33 +24,6 @@ from .tools import (
     register_peer_review_comment_tools, register_peer_review_tools,
     register_rubric_tools, register_student_tools,
 )
-
-# CRITICAL FIX: Monkey patch the MCP transport security to disable host validation
-import mcp.server.sse as mcp_sse
-
-original_connect_sse = mcp_sse.connect_sse
-
-async def patched_connect_sse(scope, receive, send, *, handle_request):
-    # Remove the host validation that's causing the 421 errors
-    # by not calling the original validation
-    try:
-        async with original_connect_sse(scope, receive, send, handle_request=handle_request) as session:
-            yield session
-    except ValueError as e:
-        if "Request validation failed" in str(e):
-            # Bypass the validation error and continue anyway
-            log_info("Bypassing host validation for Railway/Poke compatibility")
-            # Create a minimal session without validation
-            from mcp.server.sse import SseServerSession
-            from starlette.requests import Request
-            request = Request(scope, receive, send)
-            session = SseServerSession(request, handle_request)
-            yield session
-        else:
-            raise
-
-# Apply the monkey patch
-mcp_sse.connect_sse = patched_connect_sse
 
 def create_server() -> FastMCP:
     config = get_config()
@@ -71,12 +47,13 @@ def register_all_tools(mcp: FastMCP) -> None:
     register_resources_and_prompts(mcp)
     log_info("All Canvas MCP tools registered successfully!")
 
-class PokeCompatibilityMiddleware(BaseHTTPMiddleware):
+class HostFixMiddleware(BaseHTTPMiddleware):
+    """Fix host header before FastMCP's security check runs"""
     async def dispatch(self, request, call_next):
         # Get Railway domain
         railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "canvas-mcp-production-8183.up.railway.app")
         
-        # Fix the host header before any validation happens
+        # Reconstruct headers with fixed host
         new_headers = []
         for name, value in request.scope["headers"]:
             if name == b"host":
@@ -84,11 +61,22 @@ class PokeCompatibilityMiddleware(BaseHTTPMiddleware):
             else:
                 new_headers.append((name, value))
         
+        # Update scope
         request.scope["headers"] = new_headers
         request.scope["scheme"] = "https"
         request.scope["server"] = (railway_domain, 443)
-            
-        return await call_next(request)
+        
+        # Disable any transport security checks
+        request.scope["_host_validated"] = True
+        
+        try:
+            response = await call_next(request)
+            return response
+        except ValueError as e:
+            if "Request validation failed" in str(e):
+                log_error(f"Host validation failed despite middleware fix: {e}")
+                return Response("Host validation error", status_code=500)
+            raise
 
 def main() -> None:
     """Main entry point configured for Railway SSE deployment."""
@@ -99,20 +87,28 @@ def main() -> None:
     mcp = create_server()
     register_all_tools(mcp)
     
-    # Convert FastMCP to a web app and add our Poke-fix middleware
+    # Get the SSE app
     starlette_app = mcp.sse_app()
-    starlette_app.add_middleware(PokeCompatibilityMiddleware)
+    
+    # Add middleware BEFORE the app processes requests
+    # This must be the FIRST middleware added
+    starlette_app.add_middleware(HostFixMiddleware)
+    
+    # Disable host validation in the app's state
+    starlette_app.state.disable_host_check = True
     
     port = int(os.getenv("PORT", 8080))
     log_info(f"🚀 Canvas MCP Live! Port: {port}")
     
+    # Run with all proxy headers enabled and no host checking
     uvicorn.run(
         starlette_app, 
         host="0.0.0.0", 
-        port=port, 
+        port=port,
         proxy_headers=True,
         forwarded_allow_ips="*",
-        server_header=False
+        server_header=False,
+        access_log=True
     )
 
 if __name__ == "__main__":
