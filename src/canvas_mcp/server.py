@@ -2,7 +2,6 @@
 """
 Canvas MCP Server - Always-On Railway Edition
 """
-
 import argparse
 import sys
 import os
@@ -45,25 +44,33 @@ def register_all_tools(mcp: FastMCP) -> None:
     register_resources_and_prompts(mcp)
     log_info("All Canvas MCP tools registered successfully!")
 
-# --- THE POKE & RAILWAY FIX ---
 class PokeCompatibilityMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
-        # 1. Fix the "POST /sse" 405 error
-        # Poke talks to /sse, but the server internally listens on /messages
-        if request.method == "POST" and request.url.path == "/sse":
-            request.scope["path"] = "/messages"
-
-        # 2. SATISFY THE SECURITY CHECK
-        # We set the host to the EXACT URL Poke is calling.
-        # This satisfies the internal "ValueError: Request validation failed"
-        actual_host = b"canvas-mcp-production-8183.up.railway.app"
+        # Railway automatically provides this variable
+        railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "canvas-mcp-production-8183.up.railway.app")
         
-        headers = dict(request.scope["headers"])
-        headers[b"host"] = actual_host
-        headers[b"origin"] = b"https://" + actual_host
+        # Create a new headers list with corrected host
+        new_headers = []
+        host_set = False
         
-        # Update the scope with these "trusted" headers
-        request.scope["headers"] = [(k, v) for k, v in headers.items()]
+        for name, value in request.scope["headers"]:
+            if name == b"host":
+                # Replace with the correct Railway domain
+                new_headers.append((b"host", railway_domain.encode() if isinstance(railway_domain, str) else railway_domain))
+                host_set = True
+            else:
+                new_headers.append((name, value))
+        
+        # Ensure host header exists
+        if not host_set:
+            new_headers.append((b"host", railway_domain.encode() if isinstance(railway_domain, str) else railway_domain))
+        
+        # Update the scope with corrected headers
+        request.scope["headers"] = new_headers
+        
+        # Also update server name and port to match
+        request.scope["server"] = (railway_domain if isinstance(railway_domain, str) else railway_domain.decode(), 443)
+        request.scope["scheme"] = "https"
             
         return await call_next(request)
 
@@ -75,20 +82,21 @@ def main() -> None:
 
     mcp = create_server()
     register_all_tools(mcp)
-
+    
     # Convert FastMCP to a web app and add our Poke-fix middleware
     starlette_app = mcp.sse_app()
     starlette_app.add_middleware(PokeCompatibilityMiddleware)
-
+    
     port = int(os.getenv("PORT", 8080))
     log_info(f"🚀 Canvas MCP Live! Port: {port}")
-
+    
     uvicorn.run(
         starlette_app, 
         host="0.0.0.0", 
         port=port, 
         proxy_headers=True,
-        forwarded_allow_ips="*"
+        forwarded_allow_ips="*",
+        server_header=False
     )
 
 if __name__ == "__main__":
