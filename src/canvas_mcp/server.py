@@ -22,24 +22,37 @@ from .tools import (
     register_rubric_tools, register_student_tools,
 )
 
-# CRITICAL FIX: Monkey patch the transport security module to bypass host validation
+# CRITICAL FIX: Patch the SSE module to bypass host validation
 try:
-    import mcp.server.transport_security as transport_security
+    import mcp.server.sse as mcp_sse
+    from contextlib import asynccontextmanager
+    from mcp.server.sse import SseServerSession
     
-    # Save original function
-    original_validate_host = transport_security.validate_host_header
+    # Save the original connect_sse function
+    _original_connect_sse = mcp_sse.connect_sse
     
-    # Replace with a function that always passes
-    def patched_validate_host(scope, allowed_origin=None):
-        # Always return True to bypass validation
-        log_info("Bypassing host validation for Railway/Poke compatibility")
-        return True
+    @asynccontextmanager
+    async def patched_connect_sse(scope, receive, send, *, handle_request):
+        """Patched version that bypasses host validation"""
+        from starlette.requests import Request
+        
+        # Create request without validation
+        request = Request(scope, receive, send)
+        
+        # Create session directly without calling the original validation
+        session = SseServerSession(request, handle_request)
+        
+        try:
+            yield session
+        finally:
+            await session.cleanup()
     
-    # Apply the patch
-    transport_security.validate_host_header = patched_validate_host
-    log_info("Successfully patched transport security")
+    # Replace the function
+    mcp_sse.connect_sse = patched_connect_sse
+    log_info("Successfully patched MCP SSE host validation")
+    
 except Exception as e:
-    log_error(f"Failed to patch transport security: {e}")
+    log_error(f"Failed to patch MCP SSE: {e}")
 
 def create_server() -> FastMCP:
     config = get_config()
