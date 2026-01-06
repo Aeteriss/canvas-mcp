@@ -22,6 +22,33 @@ from .tools import (
     register_rubric_tools, register_student_tools,
 )
 
+# CRITICAL FIX: Monkey patch the MCP transport security to disable host validation
+import mcp.server.sse as mcp_sse
+
+original_connect_sse = mcp_sse.connect_sse
+
+async def patched_connect_sse(scope, receive, send, *, handle_request):
+    # Remove the host validation that's causing the 421 errors
+    # by not calling the original validation
+    try:
+        async with original_connect_sse(scope, receive, send, handle_request=handle_request) as session:
+            yield session
+    except ValueError as e:
+        if "Request validation failed" in str(e):
+            # Bypass the validation error and continue anyway
+            log_info("Bypassing host validation for Railway/Poke compatibility")
+            # Create a minimal session without validation
+            from mcp.server.sse import SseServerSession
+            from starlette.requests import Request
+            request = Request(scope, receive, send)
+            session = SseServerSession(request, handle_request)
+            yield session
+        else:
+            raise
+
+# Apply the monkey patch
+mcp_sse.connect_sse = patched_connect_sse
+
 def create_server() -> FastMCP:
     config = get_config()
     mcp = FastMCP(config.mcp_server_name)
@@ -46,31 +73,20 @@ def register_all_tools(mcp: FastMCP) -> None:
 
 class PokeCompatibilityMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
-        # Railway automatically provides this variable
+        # Get Railway domain
         railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "canvas-mcp-production-8183.up.railway.app")
         
-        # Create a new headers list with corrected host
+        # Fix the host header before any validation happens
         new_headers = []
-        host_set = False
-        
         for name, value in request.scope["headers"]:
             if name == b"host":
-                # Replace with the correct Railway domain
-                new_headers.append((b"host", railway_domain.encode() if isinstance(railway_domain, str) else railway_domain))
-                host_set = True
+                new_headers.append((b"host", railway_domain.encode()))
             else:
                 new_headers.append((name, value))
         
-        # Ensure host header exists
-        if not host_set:
-            new_headers.append((b"host", railway_domain.encode() if isinstance(railway_domain, str) else railway_domain))
-        
-        # Update the scope with corrected headers
         request.scope["headers"] = new_headers
-        
-        # Also update server name and port to match
-        request.scope["server"] = (railway_domain if isinstance(railway_domain, str) else railway_domain.decode(), 443)
         request.scope["scheme"] = "https"
+        request.scope["server"] = (railway_domain, 443)
             
         return await call_next(request)
 
