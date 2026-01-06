@@ -22,49 +22,6 @@ from .tools import (
     register_rubric_tools, register_student_tools,
 )
 
-# FINAL NUCLEAR OPTION: Directly patch the installed library file
-def patch_mcp_library():
-    """Patch the MCP library to disable host validation"""
-    try:
-        import mcp.server.sse
-        sse_file = mcp.server.sse.__file__
-        
-        log_info(f"Patching MCP library at: {sse_file}")
-        
-        # Read the file
-        with open(sse_file, 'r') as f:
-            content = f.read()
-        
-        # Check if already patched
-        if 'RAILWAY_PATCHED' in content:
-            log_info("MCP library already patched")
-            return
-        
-        # Replace the validation line
-        # Line 132: raise ValueError("Request validation failed")
-        # Replace with: pass  # RAILWAY_PATCHED
-        content = content.replace(
-            'raise ValueError("Request validation failed")',
-            'pass  # RAILWAY_PATCHED - Host validation disabled for Railway deployment'
-        )
-        
-        # Write back
-        with open(sse_file, 'w') as f:
-            f.write(content)
-        
-        log_info("Successfully patched MCP library!")
-        
-        # Force reload the module
-        import importlib
-        importlib.reload(mcp.server.sse)
-        
-    except Exception as e:
-        log_error(f"Failed to patch MCP library: {e}")
-        log_info("Continuing without patch...")
-
-# Apply the patch before doing anything else
-patch_mcp_library()
-
 def create_server() -> FastMCP:
     config = get_config()
     mcp = FastMCP(config.mcp_server_name)
