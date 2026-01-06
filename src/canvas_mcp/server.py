@@ -9,10 +9,9 @@ import uvicorn
 from mcp.server.fastmcp import FastMCP
 from starlette.applications import Starlette
 from starlette.routing import Route
-from starlette.responses import StreamingResponse
+from starlette.responses import Response
 from starlette.requests import Request
 import json
-import asyncio
 
 # Import your existing tool registrations
 from .core.config import get_config, validate_config
@@ -52,44 +51,41 @@ def register_all_tools(mcp: FastMCP) -> None:
 # Global MCP instance
 mcp_instance = None
 
-async def custom_sse_endpoint(request: Request):
-    """Custom SSE endpoint that bypasses host validation"""
+async def sse_endpoint(request: Request):
+    """SSE endpoint that bypasses host validation and properly handles MCP protocol"""
     log_info(f"SSE connection from {request.client}")
     
-    async def event_stream():
-        try:
-            # Send initial connection message
-            yield f"data: {json.dumps({'type': 'connection', 'status': 'connected'})}\n\n"
-            
-            # Handle MCP messages
-            while True:
-                # Read message from client
-                body = await request.body()
-                if not body:
-                    await asyncio.sleep(0.1)
-                    continue
-                
-                # Process MCP request through the FastMCP instance
-                message = json.loads(body)
-                log_info(f"Received message: {message}")
-                
-                # Send response back to client
-                response = {"jsonrpc": "2.0", "id": message.get("id"), "result": {}}
-                yield f"data: {json.dumps(response)}\n\n"
-                
-        except Exception as e:
-            log_error(f"SSE error: {e}")
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+    # Use the FastMCP instance's actual SSE handler but bypass validation
+    # by modifying the request scope before it reaches validation
+    railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "canvas-mcp-production-8183.up.railway.app")
     
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
-    )
+    # Fix the scope headers
+    new_headers = []
+    for name, value in request.scope["headers"]:
+        if name == b"host":
+            new_headers.append((b"host", railway_domain.encode()))
+        else:
+            new_headers.append((name, value))
+    
+    request.scope["headers"] = new_headers
+    request.scope["scheme"] = "https"
+    request.scope["server"] = (railway_domain, 443)
+    
+    # Now call the actual MCP SSE handler with the fixed scope
+    from mcp.server.fastmcp.server import handle_sse
+    
+    try:
+        return await handle_sse(request.scope, request.receive, request._send)
+    except ValueError as e:
+        if "Request validation failed" in str(e):
+            log_error(f"Host validation failed: {e}")
+            # Return a proper error response
+            return Response(
+                content=json.dumps({"error": "Host validation failed", "details": str(e)}),
+                status_code=500,
+                media_type="application/json"
+            )
+        raise
 
 async def health_check(request: Request):
     """Health check endpoint"""
@@ -107,20 +103,33 @@ def main() -> None:
     mcp_instance = create_server()
     register_all_tools(mcp_instance)
     
-    # Create custom Starlette app with our own SSE endpoint
-    app = Starlette(
-        routes=[
-            Route("/sse", custom_sse_endpoint, methods=["GET", "POST"]),
-            Route("/health", health_check, methods=["GET"]),
-            Route("/", health_check, methods=["GET"]),
-        ]
-    )
+    # Get the actual FastMCP SSE app
+    starlette_app = mcp_instance.sse_app()
+    
+    # Create a wrapper app that fixes headers before passing to FastMCP
+    async def fixed_app(scope, receive, send):
+        railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "canvas-mcp-production-8183.up.railway.app")
+        
+        # Fix headers in scope
+        new_headers = []
+        for name, value in scope.get("headers", []):
+            if name == b"host":
+                new_headers.append((b"host", railway_domain.encode()))
+            else:
+                new_headers.append((name, value))
+        
+        scope["headers"] = new_headers
+        scope["scheme"] = "https"
+        scope["server"] = (railway_domain, 443)
+        
+        # Pass to the real FastMCP app
+        await starlette_app(scope, receive, send)
     
     port = int(os.getenv("PORT", 8080))
     log_info(f"🚀 Canvas MCP Live! Port: {port}")
     
     uvicorn.run(
-        app, 
+        fixed_app, 
         host="0.0.0.0", 
         port=port,
         proxy_headers=True,
